@@ -134,6 +134,19 @@ func RegisterAdminRoutes(
 }
 
 func registerPromptAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	// Conversation archive, proxied to sub2api-sidecar. Read-only, and an
+	// explicit route per endpoint: a wildcard passthrough would also expose the
+	// sidecar's job-trigger endpoints to a browser session.
+	archive := admin.Group("/archive")
+	{
+		archive.GET("/status", h.Admin.Archive.Status)
+		archive.GET("/conversations", h.Admin.Archive.Conversations)
+		archive.GET("/conversations/:id", h.Admin.Archive.Conversation)
+		archive.GET("/conversations/:id/requests", h.Admin.Archive.ConversationRequests)
+		archive.GET("/users", h.Admin.Archive.Users)
+		archive.GET("/stats", h.Admin.Archive.Stats)
+	}
+
 	promptAudit := admin.Group("/prompt-audit")
 	{
 		promptAudit.GET("/config", h.Admin.PromptAudit.GetConfig)

@@ -95,6 +95,7 @@ type Config struct {
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
 	Capture                 CaptureConfig                 `mapstructure:"capture"`
+	Archive                 ArchiveConfig                 `mapstructure:"archive"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -1781,6 +1782,28 @@ type CaptureConfig struct {
 	DepthLogIntervalSeconds int `mapstructure:"depth_log_interval_seconds"`
 }
 
+// ArchiveConfig points the admin console at the conversation archive that
+// sub2api-sidecar owns.
+//
+// The gateway does not read the archive database; it proxies a fixed set of
+// read-only endpoints so administrators can review conversations from the
+// console they already log into, instead of an SSH tunnel. Leaving the URL or
+// token empty disables the feature and the proxy routes answer 503.
+type ArchiveConfig struct {
+	// SidecarURL is the sidecar base URL, e.g. http://sub2api-sidecar:8090.
+	SidecarURL string `mapstructure:"sidecar_url"`
+	// SidecarToken is the sidecar's ADMIN_TOKEN. It never reaches the browser:
+	// the gateway attaches it server-side after its own admin auth has passed.
+	SidecarToken string `mapstructure:"sidecar_token"`
+	// TimeoutMS bounds one proxied request.
+	TimeoutMS int `mapstructure:"timeout_ms"`
+}
+
+// Enabled reports whether the archive console is configured.
+func (c ArchiveConfig) Enabled() bool {
+	return strings.TrimSpace(c.SidecarURL) != "" && strings.TrimSpace(c.SidecarToken) != ""
+}
+
 func NormalizeRunMode(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
@@ -2374,6 +2397,10 @@ func setDefaults() {
 	viper.SetDefault("capture.max_inflight", 256)
 	viper.SetDefault("capture.send_timeout_ms", 2000)
 	viper.SetDefault("capture.depth_log_interval_seconds", 60)
+
+	viper.SetDefault("archive.sidecar_url", "")
+	viper.SetDefault("archive.sidecar_token", "")
+	viper.SetDefault("archive.timeout_ms", 20000)
 
 	// Idempotency
 	viper.SetDefault("idempotency.observe_only", true)
@@ -3245,6 +3272,14 @@ func (c *Config) Validate() error {
 		}
 		if c.DashboardAgg.RecomputeDays < 0 {
 			return fmt.Errorf("dashboard_aggregation.recompute_days must be non-negative")
+		}
+	}
+	if c.Archive.Enabled() {
+		if _, err := url.ParseRequestURI(strings.TrimSpace(c.Archive.SidecarURL)); err != nil {
+			return fmt.Errorf("archive.sidecar_url must be a valid URL: %w", err)
+		}
+		if c.Archive.TimeoutMS <= 0 {
+			return fmt.Errorf("archive.timeout_ms must be positive")
 		}
 	}
 	if c.Capture.Enabled {

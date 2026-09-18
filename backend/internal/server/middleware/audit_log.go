@@ -118,6 +118,11 @@ var auditSensitiveReads = map[string]string{
 	"GET /api/v1/admin/groups/:id/api-keys":       "admin.groups.api_keys.read",
 	"GET /api/v1/admin/backups/s3-config":         "admin.backups.s3_config.read",
 	"GET /api/v1/admin/data-management/s3/config": "admin.data_management.s3_config.read",
+	// Reading someone's archived conversation is the most sensitive read in the
+	// console; it must leave a trace naming who read what.
+	"GET /api/v1/admin/archive/conversations":     "admin.archive.conversations.list",
+	"GET /api/v1/admin/archive/conversations/:id": "admin.archive.conversation.read",
+	"GET /api/v1/admin/archive/users":             "admin.archive.users.read",
 }
 
 // auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
