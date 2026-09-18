@@ -203,3 +203,58 @@ func TestEnabledRequiresBothURLAndToken(t *testing.T) {
 		})
 	}
 }
+
+// The console decides whether to render the archive from status.enabled. The
+// sidecar's health payload has no top-level "enabled" — only a nested one
+// meaning "ingest is on" — so passing it through verbatim made a working
+// archive read as "not configured". The contract belongs to this handler.
+func TestStatusAlwaysReportsEnabledWhenConfigured(t *testing.T) {
+	sidecar := newFakeSidecar(t)
+	sidecar.body = `{"archive":{"store":{"conversations":262,"requests":3146}},"jobs":["quota-report"]}`
+	r := newArchiveRouter(t, config.ArchiveConfig{
+		SidecarURL: sidecar.server.URL, SidecarToken: "t", TimeoutMS: 5000,
+	})
+
+	w := do(t, r, "/api/v1/admin/archive/status")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["enabled"] != true {
+		t.Errorf("enabled = %v, want true: the console hides the page without it", body["enabled"])
+	}
+	if body["reachable"] != true {
+		t.Errorf("reachable = %v, want true", body["reachable"])
+	}
+	// The archive totals still have to reach the page header.
+	archive, ok := body["archive"].(map[string]any)
+	if !ok {
+		t.Fatalf("archive block missing: %v", body)
+	}
+	store, ok := archive["store"].(map[string]any)
+	if !ok || store["conversations"] != float64(262) {
+		t.Errorf("store totals lost: %v", archive)
+	}
+}
+
+// A health payload this build does not understand must not flip the page to
+// "not configured"; the archive is still there.
+func TestStatusSurvivesUnexpectedHealthPayload(t *testing.T) {
+	sidecar := newFakeSidecar(t)
+	sidecar.body = `{"something":"else"}`
+	r := newArchiveRouter(t, config.ArchiveConfig{
+		SidecarURL: sidecar.server.URL, SidecarToken: "t", TimeoutMS: 5000,
+	})
+
+	w := do(t, r, "/api/v1/admin/archive/status")
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["enabled"] != true || body["reachable"] != true {
+		t.Errorf("status = %v, want enabled and reachable", body)
+	}
+}

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,7 +70,19 @@ func (h *ArchiveHandler) Status(c *gin.Context) {
 			"error": fmt.Sprintf("sidecar returned HTTP %d", status)})
 		return
 	}
-	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+
+	// The sidecar's health payload carries its own nested "enabled" (whether
+	// ingest is on) and no top-level one. Passing it through verbatim made the
+	// console read a missing field as "not configured" and hide a working
+	// archive, so the console's own contract is built here instead.
+	response := gin.H{"enabled": true, "reachable": true}
+	var health struct {
+		Archive json.RawMessage `json:"archive"`
+	}
+	if err := json.Unmarshal(body, &health); err == nil && len(health.Archive) > 0 {
+		response["archive"] = health.Archive
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // Conversations lists archived conversations.
