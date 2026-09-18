@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,8 +167,8 @@ func TestServiceDeliversDecodablePayloadToRedis(t *testing.T) {
 	if payload.RequestID != "req-e2e" {
 		t.Errorf("request_id = %q, want req-e2e", payload.RequestID)
 	}
-	if payload.Prompt.Text != "hello archive" {
-		t.Errorf("prompt text = %q, want the transcript", payload.Prompt.Text)
+	if !strings.Contains(payload.Conversation.Text, "hello archive") {
+		t.Errorf("prompt text = %q, want the transcript", payload.Conversation.Text)
 	}
 	if payload.Route.Endpoint != "/v1/chat/completions" {
 		t.Errorf("endpoint = %q", payload.Route.Endpoint)

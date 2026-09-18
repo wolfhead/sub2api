@@ -182,11 +182,11 @@ func (s *Service) Submit(req securityaudit.Request) {
 func (s *Service) deliver(req securityaudit.Request) {
 	payload, err := BuildPayload(req, time.Now())
 	if err != nil {
-		if errors.Is(err, securityaudit.ErrNoPromptText) {
+		if errors.Is(err, ErrNoTranscript) {
 			// Embeddings, image-only turns and similar bodies carry nothing to
 			// archive. Expected, not a failure.
 			s.skipped.Add(1)
-			s.log.Debug("capture skipped: no prompt text",
+			s.log.Debug("capture skipped: no transcript",
 				"request_id", req.RequestID, "protocol", req.Protocol, "endpoint", req.Endpoint)
 			return
 		}
@@ -227,8 +227,10 @@ func (s *Service) deliver(req securityaudit.Request) {
 		"endpoint", payload.Route.Endpoint,
 		"model", payload.Route.Model,
 		"stage", payload.Stage,
-		"prompt_chars", payload.Prompt.Chars,
-		"messages", payload.Prompt.Messages,
+		"turns", payload.Conversation.Turns,
+		"tool_calls", payload.Conversation.ToolCalls,
+		"chars", payload.Conversation.Chars,
+		"truncated", payload.Conversation.Truncated,
 		"payload_bytes", len(encoded))
 }
 

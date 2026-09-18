@@ -4,9 +4,12 @@
 // It is deliberately independent of the Prompt Audit feature in
 // internal/securityaudit: capture stays on when risk control is disabled, does
 // not need a Guard endpoint, never blocks the gateway hot path and never
-// influences the outcome of a request. The only thing the two share is the
-// normalised securityaudit.Request that the gateway already builds, and the
-// multi-protocol prompt extractor that turns a raw body into transcript text.
+// influences the outcome of a request.
+//
+// It also no longer borrows securityaudit's prompt extractor. That one serves a
+// content scanner and, for an archive, loses the three things that matter most:
+// it truncates at 64 KiB, drops every tool call and tool result, and reorders
+// turns. See transcript.go.
 package capture
 
 import (
@@ -17,20 +20,23 @@ import (
 
 // payloadVersion is bumped whenever the wire shape changes in a way the
 // consumer cannot ignore. The sidecar rejects versions it does not know.
-const payloadVersion = 1
+//
+// v2 carries a full chronological conversation including tool activity, plus a
+// per-turn hash chain, replacing v1's truncated text-only prompt.
+const payloadVersion = 2
 
 // Payload is one archived request. Field names are the contract with the
 // sidecar; keep them stable.
 type Payload struct {
-	Version    int       `json:"v"`
-	CapturedAt time.Time `json:"captured_at"`
-	RequestID  string    `json:"request_id"`
-	Stage      string    `json:"stage"`
-	User       User      `json:"user"`
-	APIKey     APIKey    `json:"api_key"`
-	Group      Group     `json:"group"`
-	Route      Route     `json:"route"`
-	Prompt     Prompt    `json:"prompt"`
+	Version      int          `json:"v"`
+	CapturedAt   time.Time    `json:"captured_at"`
+	RequestID    string       `json:"request_id"`
+	Stage        string       `json:"stage"`
+	User         User         `json:"user"`
+	APIKey       APIKey       `json:"api_key"`
+	Group        Group        `json:"group"`
+	Route        Route        `json:"route"`
+	Conversation Conversation `json:"conversation"`
 }
 
 type User struct {
@@ -56,55 +62,78 @@ type Route struct {
 	Model    string `json:"model"`
 }
 
-// Prompt carries the unredacted transcript. Text is capped by the extractor
-// (securityaudit.DefaultFullPromptMaxRunes), so one payload is bounded even
-// when a client sends a very long conversation.
-type Prompt struct {
-	Text     string `json:"text"`
-	Hash     string `json:"hash"`
-	Chars    int    `json:"chars"`
-	Messages int    `json:"messages"`
+// Conversation is the complete exchange this request replayed.
+//
+// These APIs are stateless: every request carries the whole conversation so
+// far. One of these is therefore a full snapshot, and the last request of a
+// conversation reconstructs all of it.
+type Conversation struct {
+	// Text is the rendered conversation in chronological order, tool calls and
+	// tool results included.
+	Text string `json:"text"`
+	Hash string `json:"hash"`
+	// Chain is one short hash per turn, in order. The archive uses it to
+	// recognise that this request continues a conversation it already holds:
+	// the stored chain is a prefix of this one. That test is exact, so
+	// unrelated conversations are never merged.
+	Chain     []string `json:"chain"`
+	Chars     int      `json:"chars"`
+	Turns     int      `json:"turns"`
+	ToolCalls int      `json:"tool_calls"`
+	Truncated bool     `json:"truncated"`
 }
 
 // BuildPayload normalises one audited gateway request into an archive record.
-//
-// The multi-protocol extraction is reused from securityaudit rather than
-// reimplemented: capture must never have to know how OpenAI Chat, Responses,
-// Anthropic Messages, Gemini or the WebSocket bridge shape a request body.
-// Requests carrying no user text return securityaudit.ErrNoPromptText and are
-// skipped by the caller — there is nothing to archive.
+// Requests carrying nothing archivable return ErrNoTranscript and are skipped.
 func BuildPayload(req securityaudit.Request, now time.Time) (*Payload, error) {
-	snapshot, err := securityaudit.ExtractPromptSnapshot(req)
+	transcript, err := ExtractTranscript(req.Protocol, req.Body)
 	if err != nil {
 		return nil, err
 	}
-	stage := snapshot.Stage
+
+	toolCalls := 0
+	for _, t := range transcript.Turns {
+		if t.Role == "tool_call" {
+			toolCalls++
+		}
+	}
+
+	stage := req.Stage
 	if stage == "" {
 		stage = "http"
 	}
+	groupID := req.GroupID
+	if groupID != nil {
+		id := *groupID
+		groupID = &id
+	}
+
 	return &Payload{
 		Version:    payloadVersion,
 		CapturedAt: now.UTC(),
-		RequestID:  snapshot.RequestID,
+		RequestID:  req.RequestID,
 		Stage:      stage,
 		User: User{
-			ID:       snapshot.UserID,
-			Username: snapshot.UsernameSnapshot,
-			Email:    snapshot.UserEmailSnapshot,
+			ID:       req.UserID,
+			Username: req.Username,
+			Email:    req.UserEmail,
 		},
-		APIKey: APIKey{ID: snapshot.APIKeyID, Name: snapshot.APIKeyNameSnapshot},
-		Group:  Group{ID: snapshot.GroupID, Name: snapshot.GroupName},
+		APIKey: APIKey{ID: req.APIKeyID, Name: req.APIKeyName},
+		Group:  Group{ID: groupID, Name: req.GroupName},
 		Route: Route{
-			Provider: snapshot.Provider,
-			Endpoint: snapshot.Endpoint,
-			Protocol: snapshot.Protocol,
-			Model:    snapshot.Model,
+			Provider: req.Provider,
+			Endpoint: req.Endpoint,
+			Protocol: req.Protocol,
+			Model:    req.Model,
 		},
-		Prompt: Prompt{
-			Text:     snapshot.FullPrompt,
-			Hash:     snapshot.PromptHash,
-			Chars:    snapshot.PromptLength,
-			Messages: snapshot.MessageCount,
+		Conversation: Conversation{
+			Text:      transcript.Text,
+			Hash:      transcript.Hash,
+			Chain:     transcript.Chain,
+			Chars:     transcript.Chars,
+			Turns:     len(transcript.Turns),
+			ToolCalls: toolCalls,
+			Truncated: transcript.Truncated,
 		},
 	}, nil
 }

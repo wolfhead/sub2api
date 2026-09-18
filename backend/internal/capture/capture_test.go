@@ -134,8 +134,8 @@ func TestSubmitDeliversNormalisedPayload(t *testing.T) {
 	if payload.Route.Protocol != "openai_chat" || payload.Route.Model != "gpt-test" {
 		t.Errorf("route not carried through: %+v", payload.Route)
 	}
-	if payload.Prompt.Text == "" || payload.Prompt.Hash == "" {
-		t.Errorf("prompt not extracted: %+v", payload.Prompt)
+	if payload.Conversation.Text == "" || payload.Conversation.Hash == "" {
+		t.Errorf("conversation not extracted: %+v", payload.Conversation)
 	}
 	if got := svc.Stats().Submitted; got != 1 {
 		t.Errorf("submitted = %d, want 1", got)
@@ -243,7 +243,7 @@ func TestSubmitCopiesRequestBody(t *testing.T) {
 	if err := json.Unmarshal(sink.last(), &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if payload.Prompt.Text == "" {
+	if payload.Conversation.Text == "" {
 		t.Fatal("prompt text empty: the body was read after the caller overwrote it")
 	}
 }
