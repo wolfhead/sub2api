@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/capture"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -48,24 +49,24 @@ func (h *GatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, 
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.captureService, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.captureService, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAuditStage(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage)
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.captureService, h.contentModerationService, apiKey, subject, protocol, model, body, stage)
 }
 
-func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
+func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, captureService *capture.Service, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if c == nil || c.Request == nil {
 		return nil
 	}
@@ -76,6 +77,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 		}
 	}
 	if coordinator == nil {
+		captureRequest(captureService, c, apiKey, subject, protocol, model, body, stage)
 		legacyDecision := runContentModeration(c, reqLog, legacy, apiKey, subject, protocol, model, body)
 		if legacyDecision == nil {
 			return nil
@@ -107,6 +109,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 				}
 			}
 			logSecurityAuditStart(reqLog, request, len(body), false)
+			captureService.Submit(request)
 			decision := coordinator.Check(c.Request.Context(), request)
 			if decision.Kind == securityaudit.DecisionAllow {
 				c.Set(securityAuditWSDedupeContextKey, securityAuditWSDedupeEntry{
@@ -118,12 +121,28 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 		}
 	}
 	logSecurityAuditStart(reqLog, request, len(body), false)
+	captureService.Submit(request)
 	decision := coordinator.Check(c.Request.Context(), request)
 	if decision.AllowNextStage && cacheCompletion {
 		c.Set(securityAuditCompletedContextKey, true)
 	}
 	logSecurityAuditDone(reqLog, request, decision, false)
 	return &decision
+}
+
+// captureRequest archives a request on the legacy-only path, where no
+// securityaudit.Request is built. The struct is assembled lazily so a disabled
+// capture costs nothing.
+//
+// This path has weaker de-duplication than the coordinator path (moderation
+// that returns no decision never marks the request complete), so it may submit
+// the same request twice. That is safe by design: delivery is at-least-once and
+// the archive de-duplicates on (request_id, stage).
+func captureRequest(captureService *capture.Service, c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) {
+	if !captureService.Enabled() {
+		return
+	}
+	captureService.Submit(buildSecurityAuditRequest(c, apiKey, subject, protocol, model, body, stage))
 }
 
 func logSecurityAuditStart(reqLog *zap.Logger, request securityaudit.Request, bodyBytes int, cached bool) {

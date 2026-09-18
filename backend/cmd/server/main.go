@@ -167,6 +167,11 @@ func runMainServer() {
 			log.Printf("Prompt Audit started in degraded state: %v", err)
 		}
 	}
+	if app.Capture != nil {
+		// Archiving is a side channel: it never gates startup. A disabled or
+		// unreachable sink only costs log lines, never gateway availability.
+		app.Capture.Start()
+	}
 
 	// 启动服务器
 	go func() {
@@ -189,6 +194,12 @@ func runMainServer() {
 
 	if err := app.Server.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
+	}
+
+	// Drained after the server stops accepting: in-flight archive deliveries
+	// belong to requests that already finished.
+	if app.Capture != nil {
+		app.Capture.Shutdown(ctx)
 	}
 
 	log.Println("Server exited")

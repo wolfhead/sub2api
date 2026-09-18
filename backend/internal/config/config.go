@@ -94,6 +94,7 @@ type Config struct {
 	Dashboard               DashboardCacheConfig          `mapstructure:"dashboard_cache"`
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
+	Capture                 CaptureConfig                 `mapstructure:"capture"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -1759,6 +1760,27 @@ type UsageCleanupConfig struct {
 	TaskTimeoutSeconds int `mapstructure:"task_timeout_seconds"`
 }
 
+// CaptureConfig controls the prompt archive side channel that mirrors audited
+// gateway requests onto a Redis queue for sub2api-sidecar to drain.
+//
+// It is independent of risk control and Prompt Audit: archiving keeps working
+// with no Guard endpoint configured and with content moderation switched off.
+type CaptureConfig struct {
+	// Enabled: 是否开启请求归档旁路（默认关闭）
+	Enabled bool `mapstructure:"enabled"`
+	// RedisKey: 归档队列的 Redis list key，消费方按同一个 key BRPOP
+	RedisKey string `mapstructure:"redis_key"`
+	// MaxQueueLength: 队列长度硬上限。Redis 是内存存储且与网关缓存共用实例，
+	// 消费方停摆时必须先丢归档数据，不能拖垮网关。0 表示不限制（不建议）。
+	MaxQueueLength int64 `mapstructure:"max_queue_length"`
+	// MaxInflight: 同时投递中的协程上限，超出直接丢弃并计数
+	MaxInflight int `mapstructure:"max_inflight"`
+	// SendTimeoutMS: 单次投递超时（毫秒）
+	SendTimeoutMS int `mapstructure:"send_timeout_ms"`
+	// DepthLogIntervalSeconds: 队列积压日志间隔（秒）
+	DepthLogIntervalSeconds int `mapstructure:"depth_log_interval_seconds"`
+}
+
 func NormalizeRunMode(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
@@ -2345,6 +2367,13 @@ func setDefaults() {
 	viper.SetDefault("usage_cleanup.batch_size", 5000)
 	viper.SetDefault("usage_cleanup.worker_interval_seconds", 10)
 	viper.SetDefault("usage_cleanup.task_timeout_seconds", 1800)
+
+	viper.SetDefault("capture.enabled", false)
+	viper.SetDefault("capture.redis_key", "sub2api:capture:queue")
+	viper.SetDefault("capture.max_queue_length", 20000)
+	viper.SetDefault("capture.max_inflight", 256)
+	viper.SetDefault("capture.send_timeout_ms", 2000)
+	viper.SetDefault("capture.depth_log_interval_seconds", 60)
 
 	// Idempotency
 	viper.SetDefault("idempotency.observe_only", true)
@@ -3216,6 +3245,23 @@ func (c *Config) Validate() error {
 		}
 		if c.DashboardAgg.RecomputeDays < 0 {
 			return fmt.Errorf("dashboard_aggregation.recompute_days must be non-negative")
+		}
+	}
+	if c.Capture.Enabled {
+		if strings.TrimSpace(c.Capture.RedisKey) == "" {
+			return fmt.Errorf("capture.redis_key must not be empty when capture is enabled")
+		}
+		if c.Capture.MaxQueueLength < 0 {
+			return fmt.Errorf("capture.max_queue_length must be non-negative")
+		}
+		if c.Capture.MaxInflight <= 0 {
+			return fmt.Errorf("capture.max_inflight must be positive")
+		}
+		if c.Capture.SendTimeoutMS <= 0 {
+			return fmt.Errorf("capture.send_timeout_ms must be positive")
+		}
+		if c.Capture.DepthLogIntervalSeconds <= 0 {
+			return fmt.Errorf("capture.depth_log_interval_seconds must be positive")
 		}
 	}
 	if c.UsageCleanup.Enabled {
